@@ -26,17 +26,31 @@ def home():
 def update_leaderboard():
     global leaderboard
     data = request.get_json()
+
     if data and "name" in data and "score" in data:
-        existing = next((entry for entry in leaderboard if entry["name"] == data["name"]), None)
-        if existing:
-            existing["score"] = data["score"]
-        else:
-            leaderboard.append(data)
+        name = data["name"]
+        score = int(data["score"])  # Make sure score is an int
+
+        # Flag to check if the user exists
+        user_found = False
+
+        for entry in leaderboard:
+            if entry["name"].lower() == name.lower():  # Case-insensitive match
+                entry["score"] += score  # Add to existing score
+                user_found = True
+                break
+
+        if not user_found:
+            leaderboard.append({"name": name, "score": score})
+
+        # Sort leaderboard from highest to lowest score
         leaderboard.sort(key=lambda x: x["score"], reverse=True)
+
         save_leaderboard(leaderboard)
-        return jsonify({"status": "success", "received": data})
+        return jsonify({"status": "success", "leaderboard": leaderboard})
     else:
         return jsonify({"status": "error", "message": "Invalid data"}), 400
+
 
 @app.route('/leaderboard')
 def show_leaderboard():
