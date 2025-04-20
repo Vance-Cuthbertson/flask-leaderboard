@@ -1,7 +1,20 @@
 import json
-from flask import Flask, request, jsonify//, render_template_string
+from flask import Flask, request, jsonify
 import os
+import openpyxl
 
+def load_leaderboard(filename="leaderboard.xlsx"):
+    try:
+        workbook = openpyxl.load_workbook(filename)
+        sheet = workbook.active
+        leaderboard = {}
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            name, score = row
+            leaderboard[name] = score
+        return leaderboard
+    except FileNotFoundError:
+        return {}
+    
 DATA_FILE = 'scores.json'
 
 # Load existing scores from JSON file or create a new one
@@ -12,6 +25,7 @@ else:
     scores = {}
 
 leaderboard = load_leaderboard()
+app = Flask(__name__)
 
 @app.route('/')
 def home():
