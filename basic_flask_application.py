@@ -67,6 +67,9 @@ def show_leaderboard():
                 <tr><td>{{ loop.index }}</td><td>{{ entry.name }}</td><td>{{ entry.score }}</td></tr>
             {% endfor %}
         </table>
+        <form action="{{ url_for('fetch_esp32') }}" method="get">
+            <button type="submit">Fetch Score from ESP32</button>
+        </form>
     </body>
     </html>
     '''
