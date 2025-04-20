@@ -1,8 +1,8 @@
 import requests
 
 data = {
-    "name": "Steve",
-    "score": 100,
+    "name": "Vance",
+    "score": 20
 }
 
 response = requests.post("https://flask-leaderboard-8uws.onrender.com/update", json=data)
