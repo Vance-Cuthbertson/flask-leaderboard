@@ -77,7 +77,7 @@ def show_leaderboard():
 
 @app.route('/fetch-esp32')
 def fetch_esp32():
-    esp32_ip = 'http://192.168.X.X/score'  # Replace with your ESP32 IP
+    esp32_ip = 'http://192.168.0.150/score'  # Replace with your ESP32 IP
     try:
         response = requests.get(esp32_ip)
         if response.status_code == 200:
