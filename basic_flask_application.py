@@ -1,8 +1,6 @@
-
 import json
 from flask import Flask, request, jsonify, render_template_string
 import os
-import requests
 
 app = Flask(__name__)
 DATA_FILE = 'leaderboard.json'
@@ -67,36 +65,10 @@ def show_leaderboard():
                 <tr><td>{{ loop.index }}</td><td>{{ entry.name }}</td><td>{{ entry.score }}</td></tr>
             {% endfor %}
         </table>
-        <form action="{{ url_for('fetch_esp32') }}" method="get">
-            <button type="submit">Fetch Score from ESP32</button>
-        </form>
     </body>
     </html>
     '''
     return render_template_string(html, leaderboard=leaderboard)
-
-@app.route('/fetch-esp32')
-def fetch_esp32():
-    esp32_ip = 'http://192.168.0.150/score'  # Replace with your ESP32 IP
-    try:
-        response = requests.get(esp32_ip)
-        if response.status_code == 200:
-            data = response.json()
-            name = data['name']
-            score = int(data['score'])
-
-            # Update the leaderboard logic
-            leaderboard = load_leaderboard()
-            if name in leaderboard:
-                leaderboard[name] += score
-            else:
-                leaderboard[name] = score
-            save_leaderboard(leaderboard)
-            return redirect(url_for('home'))
-        else:
-            return f"Error: ESP32 returned status {response.status_code}"
-    except Exception as e:
-        return f"Failed to reach ESP32: {e}"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
