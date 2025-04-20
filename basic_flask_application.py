@@ -1,74 +1,71 @@
 import json
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify//, render_template_string
 import os
 
-app = Flask(__name__)
-DATA_FILE = 'leaderboard.json'
+DATA_FILE = 'scores.json'
 
-def load_leaderboard():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
-    return []
-
-def save_leaderboard(data):
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f)
+# Load existing scores from JSON file or create a new one
+if os.path.exists(DATA_FILE):
+    with open(DATA_FILE, 'r') as f:
+        scores = json.load(f)
+else:
+    scores = {}
 
 leaderboard = load_leaderboard()
 
 @app.route('/')
 def home():
-    return 'Flask server is running!'
+    return jsonify(scores)
 
 @app.route('/update', methods=['POST'])
-def update_leaderboard():
-    global leaderboard
+def update_score():
     data = request.get_json()
+    name = data.get('name')
+    score = data.get('score', 0)
 
-    if data and "name" in data and "score" in data:
-        name = data["name"]
-        score = int(data["score"])  # Make sure score is an int
+    if name:
+        if name in scores:
+            scores[name] += score
+        else:
+            scores[name] = score
 
-        # Flag to check if the user exists
-        user_found = False
+        with open(DATA_FILE, 'w') as f:
+            json.dump(scores, f)
 
-        for entry in leaderboard:
-            if entry["name"].lower() == name.lower():  # Case-insensitive match
-                entry["score"] += score  # Add to existing score
-                user_found = True
-                break
-
-        if not user_found:
-            leaderboard.append({"name": name, "score": score})
-
-        # Sort leaderboard from highest to lowest score
-        leaderboard.sort(key=lambda x: x["score"], reverse=True)
-
-        save_leaderboard(leaderboard)
-        return jsonify({"status": "success", "leaderboard": leaderboard})
+        return jsonify({'message': f"Added {score} points to {name}. New total: {scores[name]}"}), 200
     else:
-        return jsonify({"status": "error", "message": "Invalid data"}), 400
+        return jsonify({'error': 'No name provided'}), 400
 
 
 @app.route('/leaderboard')
 def show_leaderboard():
-    html = '''
-    <!DOCTYPE html>
+    sorted_scores = dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
+
+    html = """
     <html>
-    <head><title>Leaderboard</title></head>
+    <head>
+        <title>Leaderboard</title>
+        <style>
+            body { font-family: Arial; background: #f9f9f9; padding: 40px; }
+            h1 { text-align: center; color: #333; }
+            table { margin: 0 auto; border-collapse: collapse; width: 50%; }
+            th, td { border: 1px solid #ccc; padding: 10px; text-align: center; }
+            th { background-color: #eee; }
+            tr:nth-child(even) { background-color: #f2f2f2; }
+        </style>
+    </head>
     <body>
         <h1>Leaderboard</h1>
-        <table border="1" cellpadding="10">
-            <tr><th>Rank</th><th>Name</th><th>Score</th></tr>
-            {% for entry in leaderboard %}
-                <tr><td>{{ loop.index }}</td><td>{{ entry.name }}</td><td>{{ entry.score }}</td></tr>
-            {% endfor %}
-        </table>
-    </body>
-    </html>
-    '''
-    return render_template_string(html, leaderboard=leaderboard)
+        <table>
+            <tr><th>Player</th><th>Score</th></tr>
+    """
+
+    for name, score in sorted_scores.items():
+        html += f"<tr><td>{name}</td><td>{score}</td></tr>"
+
+    html += "</table></body></html>"
+    return html
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
