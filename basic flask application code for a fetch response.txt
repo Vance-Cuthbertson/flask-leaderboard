@@ -1,0 +1,45 @@
+/////This also needs to be added to the requirements.txt file so that the fetch score code will work
+requests
+
+
+/////This is needed at the top of the python code
+import requests
+
+
+/////HTML code for the fetch score button(which is imbedded in the python code)
+        <form action="{{ url_for('fetch_esp32') }}" method="get">
+            <button type="submit">Fetch Score from ESP32</button>
+        </form>
+
+
+/////python code for the fetch score
+@app.route('/fetch-esp32')
+def fetch_esp32():
+    esp32_ip = "http://192.168.0.150/score"  # Replace with your ESP32 IP
+    try:
+        response = requests.get(esp32_ip)
+        if response.status_code == 200:
+            data = response.json()
+            name = data['name']
+            score = int(data['score'])
+
+            # Update the leaderboard logic
+            leaderboard = load_leaderboard()
+            user_found = False
+
+            for entry in leaderboard:
+                if entry["name"].lower() == name.lower():
+                    entry["score"] += score
+                    user_found = True
+                    break
+
+            if not user_found:
+                leaderboard.append({"name": name, "score": score})
+
+            leaderboard.sort(key=lambda x: x["score"], reverse=True)
+            save_leaderboard(leaderboard)
+            return redirect(url_for('home'))
+        else:
+            return f"Error: ESP32 returned status {response.status_code}"
+    except Exception as e:
+        return f"Failed to reach ESP32: {e}"
