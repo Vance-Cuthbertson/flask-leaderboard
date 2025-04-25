@@ -1,31 +1,56 @@
-import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import os
+from openpyxl import Workbook, load_workbook
 
-DATA_FILE = 'leaderboard.json'
-TEAM_FILE = 'teams.json'
-
-# Load individual leaderboard
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, 'r') as f:
-        leaderboard = json.load(f)
-else:
-    leaderboard = {}
-
-# Load team leaderboard
-if os.path.exists(TEAM_FILE):
-    with open(TEAM_FILE, 'r') as f:
-        raw_teams = json.load(f)
-        teams = {
-            team: {
-                'members': set(data['members']),
-                'score': data['score']
-            } for team, data in raw_teams.items()
-        }
-else:
-    teams = {}
+LEADERBOARD_XLSX = 'leaderboard.xlsx'
+TEAMS_XLSX = 'teams.xlsx'
+RESET_CODE = "RESET123"  # Change this to your secret code
 
 app = Flask(__name__)
+
+# --- Load Data ---
+def load_leaderboard():
+    leaderboard = {}
+    if os.path.exists(LEADERBOARD_XLSX):
+        wb = load_workbook(LEADERBOARD_XLSX)
+        ws = wb.active
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            name, score = row
+            leaderboard[name] = score
+    return leaderboard
+
+def load_teams():
+    teams = {}
+    if os.path.exists(TEAMS_XLSX):
+        wb = load_workbook(TEAMS_XLSX)
+        ws = wb.active
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            team, score, members = row
+            teams[team] = {
+                'score': score,
+                'members': set(m.strip() for m in members.split(',')) if members else set()
+            }
+    return teams
+
+# --- Save Data ---
+def save_leaderboard():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Name", "Score"])
+    for name, score in leaderboard.items():
+        ws.append([name, score])
+    wb.save(LEADERBOARD_XLSX)
+
+def save_teams():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Team", "Score", "Members"])
+    for team, data in teams.items():
+        ws.append([team, data['score'], ",".join(data['members'])])
+    wb.save(TEAMS_XLSX)
+
+leaderboard = load_leaderboard()
+teams = load_teams()
 
 @app.route('/')
 def home():
@@ -34,7 +59,6 @@ def home():
 @app.route('/update', methods=['POST'])
 def update_leaderboard():
     data = request.get_json()
-
     try:
         name = data.get('name', '').strip()
         score = int(data.get('score', 0))
@@ -42,34 +66,16 @@ def update_leaderboard():
     except (ValueError, TypeError):
         return jsonify({"status": "error", "message": "Invalid input format"}), 400
 
-    # --- Individual Leaderboard ---
     leaderboard[name] = leaderboard.get(name, 0) + score
 
-    # --- Team leaderboard ---
     if team not in teams:
         teams[team] = {'members': set(), 'score': 0}
 
     if len(teams[team]['members']) < 4 or name in teams[team]['members']:
         teams[team]['members'].add(name)
         teams[team]['score'] += score
-
-        # Save updated individual leaderboard
-        with open(DATA_FILE, 'w') as f:
-            json.dump(leaderboard, f)
-
-        # Save updated team leaderboard
-        with open(TEAM_FILE, 'w') as f:
-            json.dump({
-                team: {
-                    'members': list(data['members']),
-                    'score': data['score']
-                } for team, data in teams.items()
-            }, f)
-    
-        # Debugging: print the current state of the leaderboard
-        print("Current individual leaderboard:", leaderboard)
-        print("Current teams leaderboard:", teams)
-
+        save_leaderboard()
+        save_teams()
         return jsonify({"status": "success", "message": "Score submitted!"})
     else:
         return jsonify({"status": "error", "message": "Team already has 4 members"}), 403
@@ -127,10 +133,7 @@ def show_leaderboards():
     </body>
     </html>
     """
-    from flask import Response
     return Response(html, mimetype='text/html')
-
-RESET_CODE = "RESET123"  # Change this to your secret code
 
 @app.route('/reset', methods=['POST'])
 def reset_leaderboard():
@@ -140,14 +143,10 @@ def reset_leaderboard():
     leaderboard.clear()
     teams.clear()
 
-    with open(DATA_FILE, 'w') as f:
-        json.dump({}, f)
-
-    with open(TEAM_FILE, 'w') as f:
-        json.dump({}, f)
+    save_leaderboard()
+    save_teams()
 
     return jsonify({"status": "success", "message": "Leaderboards have been reset."})
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
