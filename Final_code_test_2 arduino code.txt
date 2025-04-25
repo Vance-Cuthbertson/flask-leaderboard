@@ -1,0 +1,484 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Adafruit_NeoPixel.h>
+#include <TinyGPS++.h>
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_GFX.h>
+#include <HTTPClient.h> ///
+#include <WiFiClientSecure.h> ///
+#include <esp_wpa2.h> /// Include WPA2 library
+
+
+
+// --- NeoPixel Setup ---
+#define LED_PIN    5
+#define NUM_LEDS   24
+#define BRIGHTNESS 60
+Adafruit_NeoPixel pixels(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+
+// --- OLED Setup ---
+// This code is designed for a 128x64 OLED using text size 1 (~8 pixels tall per row)
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET   -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+
+// --- Infection/Game Logic ---
+int infectedCount = 0;
+const int maxInfected = 12;
+unsigned long lastInfection = 0;
+const unsigned long infectionInterval = 10000; // 10-second demo interval
+bool cured = false;
+unsigned long cureTime = 0; // Time when cure occurred
+
+
+// --- Point System ---
+int points = 0;  // Global point counter
+
+
+// --- LED Cure Effect Flag ---
+bool cureEffectActive = false; // When true, run the sequential LED cure effect
+
+
+// --- Define GPS Zone Structure & Multiple Zones ---
+struct GPSZone {
+  double lat;
+  double lon;
+  float radiusFeet; // in feet
+};
+
+
+const int NUM_ZONES = 3;
+GPSZone zones[NUM_ZONES] = {
+  {33.482149, -112.344397, 125.0}, // Makerspace
+  {33.480837, -112.342771, 125.0}, // Dr Bensons
+  {33.480624, -112.342909, 125.0}  // Tutor Center
+};
+
+
+const char* zoneNames[NUM_ZONES] = {
+  "Makerspace",
+  "Dr Bensons",
+  "Tutor Center"
+};
+
+
+bool inZone = false;      // True if current location falls within any zone
+int currentZone = -1;     // Index of active zone (if any)
+
+
+// --- Define Question Structure for Each Zone ---
+struct Question {
+  const char* zoneName;
+  const char* questionText;
+  const char* optionA;
+  const char* optionB;
+  const char* optionC;
+  const char* optionD;
+  char correctAnswer; // 'A', 'B', 'C', or 'D'
+};
+
+
+Question questions[NUM_ZONES] = {
+  {"Makerspace", "What is the main color of the Makerspace sign?", "Red", "Blue", "Green", "Yellow", 'C'},
+  {"Dr Bensons", "Which room is Dr Bensons' office located in?", "Room 101", "Room 202", "Room 303", "Room 404", 'B'},
+  {"Tutor Center", "How many tutors are usually present?", "1", "2", "3", "4", 'D'}
+};
+
+
+// --- GPS Setup ---
+HardwareSerial GPSserial(2);  // Using Serial2 for GPS (RX = GPIO16)
+TinyGPSPlus gps;
+
+/// EMCC Wi-Fi credentials
+const char* ssid = "EMCC-WIFI";   /// ← your actual Wi-Fi name
+const char* identity = "VAN2180542";  /// Like your student ID
+const char* username = "VAN2180542";  /// Often the same
+const char* password = "20Vec2003!!!";  /// Your login password
+
+/// Flask app URL
+const char* flaskURL = "https://flask-leaderboard-8uws.onrender.com/update";
+
+// --- WiFi Access Point & Web Server ---
+const char* ap_ssid = "CureZone_AP"; ///
+const char* ap_password = "12345678"; ///
+WebServer server(80);
+
+
+// --- Static Web Pages for Responses ---
+const char* successPage = "<html><body><h2>Correct! You're cured!</h2></body></html>";
+const char* failPage = "<html><body><h2>Incorrect. Try again!</h2><a href='/'>Back</a></body></html>";
+
+
+// --- Web Server Route Handlers ---
+
+// Challenge page – displays a question based on the current zone.
+// If the satellite signal is too low, a no-signal page is shown, prompting the professor override.
+void handleRoot() {
+  String page = "<!DOCTYPE html><html><head><title>Cure Challenge + Leaderboard</title>";
+  page += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  page += "<style>";
+  page += "body { font-family: Arial, sans-serif; margin: 20px; background: #f2f2f2; }";
+  page += "h2 { color: #333; }";
+  page += "form { background: #fff; padding: 15px; margin-bottom: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }";
+  page += "label { display: block; margin: 10px 0 5px; font-weight: bold; }";
+  page += "input[type='text'] { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 5px; }";
+  page += "input[type='submit'], button { margin-top: 10px; padding: 10px 20px; background: #007BFF; color: #fff; border: none; border-radius: 5px; cursor: pointer; }";
+  page += "input[type='submit']:hover, button:hover { background: #0056b3; }";
+  page += "</style></head><body>";
+
+  // GPS satellite check
+  if (gps.satellites.value() < 3) {
+    page += "<h2>No Satellite Signal Detected</h2>";
+    page += "<p>The device cannot connect to enough satellites for the challenge.</p>";
+    page += "<p>Please use the <a href='/override'>Professor Override</a> to cure the infection.</p>";
+  } else if (currentZone == -1) {
+    page += "<h2>No Valid Zone</h2>";
+    page += "<p>You are not in a designated area. Please move to a valid location.</p>";
+  } else {
+    // Show Cure Challenge
+    Question q = questions[currentZone];
+    page += "<h2>Cure Challenge: " + String(q.zoneName) + "</h2>";
+    page += "<p>" + String(q.questionText) + "</p>";
+    page += "<form action='/cure' method='GET'>";
+    page += "<button name='answer' value='A'>A) " + String(q.optionA) + "</button><br>";
+    page += "<button name='answer' value='B'>B) " + String(q.optionB) + "</button><br>";
+    page += "<button name='answer' value='C'>C) " + String(q.optionC) + "</button><br>";
+    page += "<button name='answer' value='D'>D) " + String(q.optionD) + "</button><br>";
+    page += "</form>";
+  }
+
+  // Professor override
+  page += "<form action='/override' method='GET'>";
+  page += "<input type='submit' value='Professor Override'>";
+  page += "</form>";
+
+  // View Leaderboard
+  page += "<a href ='https://flask-leaderboard-8uws.onrender.com/leaderboard'>View Leaderboard</a>";
+
+
+  page += "<button onclick='location.reload();'>Refresh</button>";
+  page += "</body></html>";
+
+  server.send(200, "text/html", page);
+}
+
+
+// Handle cure challenge answer submission.
+// If the answer is correct and infection is at its maximum, award 1 point and cure the infection.
+void handleCure() {
+  String answer = server.arg("answer");
+  if (currentZone != -1) {
+    Question q = questions[currentZone];
+    if (answer.equalsIgnoreCase(String(q.correctAnswer)) && infectedCount >= maxInfected) {
+      cured = true;
+      infectedCount = 0;
+      cureTime = millis();
+      points += 1;
+
+      // Generate and send the leaderboard submission page
+      String page = "<!DOCTYPE html><html><head><title>ESP32 Leaderboard</title></head><body>";
+      page += "<h2>Correct! You’ve been cured</h2>";
+      page += "<form action='/update' method='POST'>";
+      page += "<label for='player'>Enter your name:</label>";
+      page += "<input type='text' id='player' name='player' required>";
+      page += "<input type='hidden' name='score' value='1'>";
+      page += "<input type='submit' value='Update Leaderboard'>";
+      page += "</form>";
+      page += "</body></html>";
+ 
+      server.send(200, "text/html", page);
+      return;
+    }
+  }
+  
+  // If answer is incorrect or not in a zone
+  server.send(200, "text/html", failPage);
+}
+
+
+// Handle professor override.
+// If the override code is correct, award 3 points regardless of zone.
+void handleOverride() {
+  if (server.hasArg("code") && server.arg("code").length() > 0) {
+    String code = server.arg("code");
+    if (code == "PROF123") {  // Adjust override code as needed.
+      cured = true;
+      infectedCount = 0;
+      cureTime = millis();
+      points += 3;
+      
+      // Send leaderboard submission form
+      String page = "<!DOCTYPE html><html><head><title>Override Success</title></head><body>";
+      page += "<h2>Override Successful: Student is cured!</h2>";
+      page += "<form action='/update' method='POST'>";
+      page += "<label for='player'>Enter student's name:</label>";
+      page += "<input type='text' id='player' name='player' required>";
+      page += "<input type='hidden' name='score' value='3'>";
+      page += "<input type='submit' value='Submit to Leaderboard'>";
+      page += "</form>";
+      page += "</body></html>";
+      
+      server.send(200, "text/html", page);
+      return;
+    } else {
+      server.send(200, "text/html", "<html><body><h2>Incorrect Override Code.</h2><a href='/override'>Try again</a></body></html>");
+      return;
+    }
+  }
+
+  // Show code entry page if code wasn't submitted yet
+  String page = "<!DOCTYPE html><html><head><title>Override Cure</title>";
+  page += "<style>body { font-family: sans-serif; padding:20px; background:#f4f4f4; font-size:24px; }"
+          "input, button { font-size:22px; padding:10px; margin:10px; }</style></head><body>";
+  page += "<h1>Professor Override</h1>";
+  page += "<p>Enter the override code:</p>";
+  page += "<form action='/override' method='GET'>";
+  page += "<input type='text' name='code' />";
+  page += "<button type='submit'>Submit</button>";
+  page += "</form>";
+  page += "<p><a href='/'>Back to Cure Challenge</a></p>";
+  page += "</body></html>";
+  server.send(200, "text/html", page);
+}
+
+void handleUpdatePost() {
+  if (!server.hasArg("player") || !server.hasArg("score")) {
+    server.send(400, "text/plain", "Missing player name or score");
+    return;
+  }
+
+  String name = server.arg("player");
+  String score = server.arg("score");
+
+  Serial.println("Submitting to leaderboard:");
+  Serial.println("Name: " + name);
+  Serial.println("Score: " + score);
+
+  // Prepare HTTPS POST
+  WiFiClientSecure client;
+  client.setInsecure();  // Skip SSL verification (for testing with Render)
+  HTTPClient https;
+
+  if (https.begin(client, flaskURL)) {
+    https.addHeader("Content-Type", "application/json");
+
+    String payload = "{\"name\":\"" + name + "\",\"score\":" + score + "}";
+    int httpResponseCode = https.POST(payload);
+
+    if (httpResponseCode > 0) {
+      String response = https.getString();
+      Serial.println("Leaderboard response: " + response);
+      server.send(200, "text/html", "<html><body><h2>Score submitted!</h2><a href='/'>Back</a></body></html>");
+    } else {
+      Serial.printf("Failed to send POST: %s\n", https.errorToString(httpResponseCode).c_str());
+      server.send(500, "text/plain", "Failed to connect to leaderboard.");
+    }
+
+    https.end();
+  } else {
+    server.send(500, "text/plain", "Unable to start HTTPS connection.");
+  }
+}
+
+
+//////////////////
+// Setup Function
+//////////////////
+void setup() {
+  Serial.begin(115200);
+ 
+  // Initialize NeoPixels.
+  pixels.begin();
+  pixels.setBrightness(BRIGHTNESS);
+  pixels.clear();
+  pixels.show();
+ 
+  // Initialize GPS serial (RX = GPIO16).
+  GPSserial.begin(9600, SERIAL_8N1, 16, -1);
+ 
+  // Initialize OLED display.
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED not found!");
+    while (true);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Infection Game Booting...");
+  display.display();
+ 
+  // Set up WiFi Access Point.
+  WiFi.disconnect(true); // Clean up before starting
+  WiFi.mode(WIFI_AP_STA); // Set both station and AP mode
+  WiFi.softAP(ap_ssid, ap_password); // Start the AP
+
+  // WPA2-Enterprise setup
+  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity)); ///add back in
+  esp_wifi_sta_wpa2_ent_set_username((uint8_t *)username, strlen(username)); ///add back in
+  esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password)); ///add back in
+  esp_wifi_sta_wpa2_ent_enable();
+  
+  WiFi.begin(ssid); // Only do this once after setting WPA2 creds ///add back in
+  //WiFi.begin(ssid, password); /// Take out when at the school
+  Serial.print("Connecting to "); ///add back in
+  Serial.println(ssid); ///add back in
+  Serial.println("Access Point IP: " + WiFi.softAPIP().toString());
+  Serial.println("Station IP: " + WiFi.localIP().toString());
+
+while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected!");
+  Serial.println(WiFi.localIP());
+  
+   // Define web server routes.
+  server.on("/", handleRoot);
+  server.on("/cure", handleCure);
+  server.on("/override", handleOverride);
+  server.on("/update", HTTP_POST, handleUpdatePost);
+  server.on("/update", HTTP_GET, handleUpdatePost);
+  server.begin();
+  Serial.println("Web server started");
+
+}
+  
+
+
+
+////////////
+// Loop Function
+////////////
+void loop() {
+  server.handleClient();
+ 
+  while (GPSserial.available()) {
+    gps.encode(GPSserial.read());
+  }
+ 
+  bool validLocation = gps.location.isValid();
+  double lat = 0.0, lon = 0.0;
+  if (validLocation) {
+    lat = gps.location.lat();
+    lon = gps.location.lng();
+  }
+ 
+  double zoneDistances[NUM_ZONES];
+  for (int i = 0; i < NUM_ZONES; i++) {
+    if (!validLocation) {
+      zoneDistances[i] = -1.0;
+    } else {
+      double distM = gps.distanceBetween(lat, lon, zones[i].lat, zones[i].lon);
+      zoneDistances[i] = distM * 3.28084;
+    }
+  }
+ 
+  inZone = false;
+  currentZone = -1;
+  for (int i = 0; i < NUM_ZONES; i++) {
+    if (zoneDistances[i] >= 0 && zoneDistances[i] < zones[i].radiusFeet) {
+      inZone = true;
+      currentZone = i;
+    }
+  }
+ 
+  // Infection logic: Increase infection count periodically if not cured.
+  if (!cured && infectedCount < maxInfected && millis() - lastInfection > infectionInterval) {
+    infectedCount++;
+    lastInfection = millis();
+  }
+ 
+  // If cured and 1 minute has passed since cure, reset cure state.
+  if (cured && (millis() - cureTime > 60000)) {
+    cured = false;
+  }
+ 
+  // --- OLED Display Update ---
+  // Layout:
+  // Row 0: "Inf: X/Y"
+  // Row 1: "St: ..." (status with cure countdown if applicable)
+  // Rows 2-4: Zone information (name and distance)
+  // Row 5: "Satellites: ..." (full word)
+  // Row 6: "Points: ..." (points)
+  display.clearDisplay();
+ 
+  display.setCursor(0, 0);
+  display.print("Inf: ");
+  display.print(infectedCount);
+  display.print("/");
+  display.println(maxInfected);
+ 
+  display.setCursor(0, 8);
+  display.print("St: ");
+  if (cured) {
+    unsigned long elapsed = millis() - cureTime;
+    unsigned long remaining = (60000 > elapsed) ? 60000 - elapsed : 0;
+    unsigned long secs = remaining / 1000;
+    display.print("Cured! ");
+    display.print(secs);
+    display.println("s");
+  } else if (infectedCount == 0) {
+    display.println("Healthy");
+  } else if (infectedCount >= maxInfected && inZone) {
+    display.println("Chlg!");
+  } else {
+    display.println("Infected");
+  }
+ 
+  display.setCursor(0, 16);
+  for (int i = 0; i < NUM_ZONES; i++) {
+    display.print(zoneNames[i]);
+    display.print(": ");
+    if (zoneDistances[i] < 0) {
+      display.println("N/A");
+    } else {
+      display.print(zoneDistances[i], 1);
+      display.println("ft");
+    }
+  }
+ 
+  display.setCursor(0, 40);
+  display.print("Satellites: ");
+  display.println(gps.satellites.value());
+ 
+  display.setCursor(0, 48);
+  display.print("Points: ");
+  display.println(points);
+ 
+  display.display();
+ 
+  // --- LED Effect ---
+  if (cureEffectActive) {
+    for (int i = 0; i < NUM_LEDS; i++) {
+      pixels.setPixelColor(i, 0, 255, 0); // Set LED i to full green sequentially.
+      pixels.show();
+      delay(50);
+    }
+    cureEffectActive = false;
+  } else {
+    static int brightness = 30;
+    static int dir = 5;
+    brightness += dir;
+    if (brightness > 150 || brightness < 30) {
+      dir = -dir;
+    }
+    pixels.clear();
+    for (int i = 0, j = 0; j < maxInfected && i < NUM_LEDS; i += 2, j++) {
+      if (cured) {
+        pixels.setPixelColor(i, 0, brightness, 0);
+      } else if (j < infectedCount) {
+        pixels.setPixelColor(i, brightness, 0, 0);
+      } else {
+        pixels.setPixelColor(i, 0, brightness, 0);
+      }
+    }
+    pixels.show();
+    delay(25);
+  }
+}
