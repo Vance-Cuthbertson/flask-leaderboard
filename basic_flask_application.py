@@ -50,8 +50,12 @@ def home():
 
 @app.route('/update', methods=['POST'])
 def update_score():
-    data = request.get_json()
-    name = data.get('name')
+    if request.is_json:
+        data = request.get_json()
+    else:
+        data = request.form  # from ESP32 form
+
+    name = data.get('name') or data.get('player')
     score = data.get('score', 0)
     team = data.get('team')
 
