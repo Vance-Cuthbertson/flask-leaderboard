@@ -1,152 +1,85 @@
-from flask import Flask, request, jsonify, Response
+import json
+from flask import Flask, request, jsonify
 import os
-from openpyxl import Workbook, load_workbook
+import openpyxl
 
-LEADERBOARD_XLSX = 'leaderboard.xlsx'
-TEAMS_XLSX = 'teams.xlsx'
-RESET_CODE = "RESET123"  # Change this to your secret code
-
-app = Flask(__name__)
-
-# --- Load Data ---
-def load_leaderboard():
-    leaderboard = {}
-    if os.path.exists(LEADERBOARD_XLSX):
-        wb = load_workbook(LEADERBOARD_XLSX)
-        ws = wb.active
-        for row in ws.iter_rows(min_row=2, values_only=True):
+def load_leaderboard(filename="leaderboard.xlsx"):
+    try:
+        workbook = openpyxl.load_workbook(filename)
+        sheet = workbook.active
+        leaderboard = {}
+        for row in sheet.iter_rows(min_row=2, values_only=True):
             name, score = row
             leaderboard[name] = score
-    return leaderboard
+        return leaderboard
+    except FileNotFoundError:
+        return {}
+    
+DATA_FILE = 'scores.json'
 
-def load_teams():
-    teams = {}
-    if os.path.exists(TEAMS_XLSX):
-        wb = load_workbook(TEAMS_XLSX)
-        ws = wb.active
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            team, score, members = row
-            teams[team] = {
-                'score': score,
-                'members': set(m.strip() for m in members.split(',')) if members else set()
-            }
-    return teams
-
-# --- Save Data ---
-def save_leaderboard():
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Name", "Score"])
-    for name, score in leaderboard.items():
-        ws.append([name, score])
-    wb.save(LEADERBOARD_XLSX)
-
-def save_teams():
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["Team", "Score", "Members"])
-    for team, data in teams.items():
-        ws.append([team, data['score'], ",".join(data['members'])])
-    wb.save(TEAMS_XLSX)
+# Load existing scores from JSON file or create a new one
+if os.path.exists(DATA_FILE):
+    with open(DATA_FILE, 'r') as f:
+        scores = json.load(f)
+else:
+    scores = {}
 
 leaderboard = load_leaderboard()
-teams = load_teams()
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return jsonify(leaderboard)
+    return jsonify(scores)
 
 @app.route('/update', methods=['POST'])
-def update_leaderboard():
+def update_score():
     data = request.get_json()
-    try:
-        name = data.get('name', '').strip()
-        score = int(data.get('score', 0))
-        team = data.get('team', '').strip()
-    except (ValueError, TypeError):
-        return jsonify({"status": "error", "message": "Invalid input format"}), 400
+    name = data.get('name')
+    score = data.get('score', 0)
 
-    leaderboard[name] = leaderboard.get(name, 0) + score
+    if name:
+        if name in scores:
+            scores[name] += score
+        else:
+            scores[name] = score
 
-    if team not in teams:
-        teams[team] = {'members': set(), 'score': 0}
+        with open(DATA_FILE, 'w') as f:
+            json.dump(scores, f)
 
-    if len(teams[team]['members']) < 4 or name in teams[team]['members']:
-        teams[team]['members'].add(name)
-        teams[team]['score'] += score
-        save_leaderboard()
-        save_teams()
-        return jsonify({"status": "success", "message": "Score submitted!"})
+        return jsonify({'message': f"Added {score} points to {name}. New total: {scores[name]}"}), 200
     else:
-        return jsonify({"status": "error", "message": "Team already has 4 members"}), 403
+        return jsonify({'error': 'No name provided'}), 400
+
 
 @app.route('/leaderboard')
-def show_leaderboards():
-    sorted_individuals = sorted(leaderboard.items(), key=lambda x: x[1], reverse=True)
-    sorted_teams = sorted(teams.items(), key=lambda x: x[1]['score'], reverse=True)
+def show_leaderboard():
+    sorted_scores = dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
 
     html = """
-    <!DOCTYPE html>
     <html>
     <head>
-        <title>Leaderboards</title>
+        <title>Leaderboard</title>
         <style>
-            body { font-family: Arial, sans-serif; padding: 20px; background: #f0f0f0; }
-            h1 { text-align: center; }
-            .container { display: flex; justify-content: space-around; gap: 40px; flex-wrap: wrap; }
-            table {
-                background: white; border-collapse: collapse; width: 100%; max-width: 400px;
-                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            }
-            th, td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
-            th { background-color: #4CAF50; color: white; }
+            body { font-family: Arial; background: #f9f9f9; padding: 40px; }
+            h1 { text-align: center; color: #333; }
+            table { margin: 0 auto; border-collapse: collapse; width: 50%; }
+            th, td { border: 1px solid #ccc; padding: 10px; text-align: center; }
+            th { background-color: #eee; }
+            tr:nth-child(even) { background-color: #f2f2f2; }
         </style>
     </head>
     <body>
-        <h1>Game Leaderboards</h1>
-        <div class="container">
-            <div>
-                <h2>Individual Leaderboard</h2>
-                <table>
-                    <tr><th>Player</th><th>Score</th></tr>
+        <h1>Leaderboard</h1>
+        <table>
+            <tr><th>Player</th><th>Score</th></tr>
     """
 
-    for name, score in sorted_individuals:
+    for name, score in sorted_scores.items():
         html += f"<tr><td>{name}</td><td>{score}</td></tr>"
 
-    html += """
-                </table>
-            </div>
-            <div>
-                <h2>Team Leaderboard</h2>
-                <table>
-                    <tr><th>Team</th><th>Score</th></tr>
-    """
+    html += "</table></body></html>"
+    return html
 
-    for team, data in sorted_teams:
-        html += f"<tr><td>{team}</td><td>{data['score']}</td></tr>"
-
-    html += """
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    return Response(html, mimetype='text/html')
-
-@app.route('/reset', methods=['POST'])
-def reset_leaderboard():
-    if request.form.get("code") != RESET_CODE:
-        return jsonify({"status": "error", "message": "Invalid reset code"}), 403
-
-    leaderboard.clear()
-    teams.clear()
-
-    save_leaderboard()
-    save_teams()
-
-    return jsonify({"status": "success", "message": "Leaderboards have been reset."})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
